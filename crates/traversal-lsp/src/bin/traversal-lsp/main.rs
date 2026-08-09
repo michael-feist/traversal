@@ -4,12 +4,18 @@
 
 use std::{
     error::Error,
+    fmt,
     path::{Path, PathBuf},
 };
 
-use tracing::debug_span;
+use tracing::{Event, debug_span};
 
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{
+    EnvFilter,
+    fmt::format::{DefaultFields, Writer},
+    fmt::{FmtContext, FormatEvent},
+    registry::Registry,
+};
 use traversal_core::{TagRegistry, aggregate_tags, find_tags};
 
 use lsp_types::{
@@ -17,9 +23,9 @@ use lsp_types::{
     DidChangeWatchedFilesRegistrationOptions, DidChangeWorkspaceFoldersNotification,
     DidChangeWorkspaceFoldersParams, DocumentLink, DocumentLinkOptions, DocumentLinkParams,
     DocumentLinkRequest, FileSystemWatcher, GlobPattern, InitializeParams, LspNotificationMethod,
-    LspRequestMethod, Notification, Registration, RegistrationParams, Request, ServerCapabilities,
-    WorkDoneProgressOptions, WorkspaceFolders, WorkspaceFoldersServerCapabilities,
-    WorkspaceOptions,
+    LspRequestMethod, Notification, Position, Range, Registration, RegistrationParams, Request,
+    ServerCapabilities, TextDocumentSync, TextDocumentSyncKind, Uri, WorkDoneProgressOptions,
+    WorkspaceFolders, WorkspaceFoldersServerCapabilities, WorkspaceOptions,
 };
 
 #[allow(
@@ -31,6 +37,23 @@ use anyhow::Result;
 use lsp_server::{
     Connection, Message, Request as ServerRequest, RequestId, Response, ResponseKind,
 };
+
+struct LspPrefix<E>(E);
+
+impl<E> FormatEvent<Registry, DefaultFields> for LspPrefix<E>
+where
+    E: FormatEvent<Registry, DefaultFields>,
+{
+    fn format_event(
+        &self,
+        ctx: &FmtContext<'_, Registry, DefaultFields>,
+        mut writer: Writer<'_>,
+        event: &Event<'_>,
+    ) -> fmt::Result {
+        writer.write_str("[lsp] ")?;
+        self.0.format_event(ctx, writer, event)
+    }
+}
 
 struct TraversalLspState {
     workspace_folders: Vec<PathBuf>,
@@ -72,9 +95,11 @@ fn _print_tags(tags: &TagRegistry) {
 #[allow(clippy::print_stderr)]
 fn main() -> std::result::Result<(), Box<dyn Error + Sync + Send>> {
     tracing_subscriber::fmt()
-        .with_ansi(false)
         .with_writer(std::io::stderr)
         .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
+        .event_format(LspPrefix(
+            tracing_subscriber::fmt::format().with_ansi(false),
+        ))
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
@@ -86,8 +111,9 @@ fn main() -> std::result::Result<(), Box<dyn Error + Sync + Send>> {
 
     // advertised capabilities
     let caps = ServerCapabilities {
+        text_document_sync: Some(TextDocumentSync::Kind(TextDocumentSyncKind::Full)),
         document_link_provider: Some(DocumentLinkOptions::new(
-            Some(true),
+            Some(false),
             WorkDoneProgressOptions::new(Some(false)),
         )),
         workspace: Some(WorkspaceOptions::new(
@@ -100,12 +126,12 @@ fn main() -> std::result::Result<(), Box<dyn Error + Sync + Send>> {
         )),
         ..Default::default()
     };
+    let (init_id, init_params) = connection.initialize_start()?;
     let init_value = serde_json::json!({
         "capabilities": caps,
-        "offsetEncoding": ["utf-8"],
     });
 
-    let init_params = connection.initialize(init_value)?;
+    connection.initialize_finish(init_id, init_value)?;
     main_loop(connection, init_params)?;
     io_thread.join()?;
     log::info!("Shutting down...");
@@ -179,16 +205,18 @@ fn main_loop(
                 if connection.handle_shutdown(&req)? {
                     break;
                 }
+                log::debug!("Received request '{}'", req.method);
                 if let Err(err) = handle_request(&connection, &req, &traversal_lsp_state) {
-                    log::error!("[lsp] request {} failed: {err}", req.method);
+                    log::error!("Request {} failed: {err}", req.method);
                 }
             }
             Message::Notification(note) => {
+                log::debug!("Received notification '{}'", note.method);
                 if let Err(err) = handle_notification(&note, &mut traversal_lsp_state) {
-                    log::error!("[lsp] notification {} failed: {err}", note.method);
+                    log::error!("Notification {} failed: {err}", note.method);
                 }
             }
-            Message::Response(resp) => log::info!("[lsp] response: {resp:?}"),
+            Message::Response(resp) => log::debug!("Received response '{resp:?}'"),
         }
     }
     Ok(())
@@ -207,15 +235,11 @@ fn handle_notification(
         DidChangeWorkspaceFoldersNotification::METHOD => {
             let p: DidChangeWorkspaceFoldersParams = serde_json::from_value(note.params.clone())?;
             for added in &p.event.added {
-                log::info!(
-                    "[lsp] Added workspace folder '{}': {}",
-                    added.name,
-                    added.uri
-                );
+                log::info!("Added workspace folder '{}': {}", added.name, added.uri);
             }
             for removed in &p.event.removed {
                 log::info!(
-                    "[lsp] Removed workspace folder '{}': {}",
+                    "Removed workspace folder '{}': {}",
                     removed.name,
                     removed.uri
                 );
@@ -223,14 +247,16 @@ fn handle_notification(
         }
         DidChangeWatchedFilesNotification::METHOD => {
             let _p: DidChangeWatchedFilesParams = serde_json::from_value(note.params.clone())?;
-            log::info!("[lsp] Received DidChangeWatchedFiles");
+            log::info!("Received DidChangeWatchedFiles");
             {
                 let _tracing_span = debug_span!("find_tags").entered();
                 traversal_lsp_state.tags =
                     aggregate_tags(find_tags(&traversal_lsp_state.workspace_folders));
             }
         }
-        _ => {}
+        _ => {
+            log::debug!("Received unhandled notification type '{}'", method);
+        }
     }
     Ok(())
 }
@@ -257,9 +283,42 @@ fn handle_request(
                 .get(document_path);
             match link_tags_opt {
                 // TODO(mfeist): Actually convert link_tags to valid DocumentLinks
-                Some(link_tags) => send_ok(conn, req.id.clone(), &Vec::<DocumentLink>::new()),
-                None => send_ok(conn, req.id.clone(), &Vec::<DocumentLink>::new()),
-            };
+                Some(link_tag_idxs) => {
+                    let mut document_links = Vec::<DocumentLink>::new();
+                    for link_tag_idx in link_tag_idxs {
+                        let link_tag = &traversal_lsp_state.tags.link_tags.tags[*link_tag_idx];
+                        let document_link = DocumentLink::new(
+                            Range::new(
+                                Position::new(
+                                    link_tag.line_number.try_into().unwrap(),
+                                    link_tag.range.start.try_into().unwrap(),
+                                ),
+                                Position::new(
+                                    link_tag.line_number.try_into().unwrap(),
+                                    link_tag.range.end.try_into().unwrap(),
+                                ),
+                            ),
+                            Some(
+                                Uri::parse(
+                                    format!(
+                                        "file://{}#L{},{}",
+                                        link_tag.file_path.to_str().unwrap(),
+                                        link_tag.line_number,
+                                        link_tag.range.start
+                                    )
+                                    .as_str(),
+                                )
+                                .expect("Invalid URI parse"),
+                            ),
+                            None,
+                            None,
+                        );
+                        document_links.push(document_link);
+                    }
+                    send_ok(conn, req.id.clone(), &document_links)?
+                }
+                None => send_ok(conn, req.id.clone(), &Vec::<DocumentLink>::new())?,
+            }
         }
         // CompletionRequest::METHOD => {
         //     let item = CompletionItem {

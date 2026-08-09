@@ -17,11 +17,14 @@
           nativeBuildInputs = with pkgs; [
             rustup
             nodejs
+            cacert
           ];
 
           RUSTC_VERSION = toolchain.toolchain.channel;
 
           shellHook = ''
+            export SSL_CERT_FILE="${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+            export NIX_SSL_CERT_FILE="$SSL_CERT_FILE"
             export PATH="$PATH:''${CARGO_HOME:-$HOME/.cargo}/bin"
             export PATH="$PATH:''${RUSTUP_HOME:-$HOME/.rustup}/toolchains/$RUSTC_VERSION-${pkgs.stdenv.hostPlatform.rust.rustcTarget}/bin"
           '';

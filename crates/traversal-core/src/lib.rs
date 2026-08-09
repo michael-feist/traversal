@@ -5,6 +5,7 @@ use ignore::{WalkBuilder, WalkState};
 use regex::Regex;
 use std::collections::HashMap;
 use std::io;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, RwLock};
 
@@ -51,6 +52,7 @@ impl<'a> Sink for Aggregator<'a> {
                     id: tag_id,
                     file_path: Box::from(self.path),
                     line_number,
+                    range: group.range(),
                 })
             }
             if let Some(group) = captures.get(RegexGroup::Link as usize) {
@@ -59,6 +61,7 @@ impl<'a> Sink for Aggregator<'a> {
                     id: tag_id,
                     file_path: Box::from(self.path),
                     line_number,
+                    range: group.range(),
                 })
             }
         }
@@ -72,6 +75,7 @@ pub struct Tag {
     pub id: String,
     pub file_path: Box<Path>,
     pub line_number: u64,
+    pub range: Range<usize>,
 }
 
 pub struct TagList {

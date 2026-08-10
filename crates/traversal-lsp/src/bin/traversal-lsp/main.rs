@@ -74,6 +74,7 @@ fn _print_tags(tags: &TagRegistry) {
 #[allow(clippy::print_stderr)]
 fn main() -> std::result::Result<(), Box<dyn Error + Sync + Send>> {
     tracing_subscriber::fmt()
+        .with_ansi(false)
         .with_writer(std::io::stderr)
         .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
         .with_env_filter(

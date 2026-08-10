@@ -1,6 +1,8 @@
 // TODO(mfeist)
 //
-// - Provide document link and document link resolution.
+// - Make link ranges the entire pattern not just the ID portion.
+// - Make links with multiple targets work better in vscode. Defaults to first.
+// - Clean up the code. Some pretty hard to parse sections right now.
 
 use std::{
     error::Error,

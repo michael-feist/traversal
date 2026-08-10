@@ -287,41 +287,49 @@ fn handle_request(
                     let mut document_links = Vec::<DocumentLink>::new();
                     for link_tag_idx in link_tag_idxs {
                         let link_tag = &traversal_lsp_state.tags.link_tags.tags[*link_tag_idx];
-                        let target_tag_idxs =
-                            &traversal_lsp_state.tags.target_tags.tag_indices_by_id
-                                [link_tag.id.as_str()];
-                        for target_tag_idx in target_tag_idxs {
-                            let target_tag =
-                                &traversal_lsp_state.tags.target_tags.tags[*target_tag_idx];
-                            let line_number: u32 =
-                                target_tag.line_number.saturating_sub(1).try_into().unwrap();
-                            let document_link = DocumentLink::new(
-                                Range::new(
-                                    Position::new(
-                                        line_number,
-                                        target_tag.range.start.try_into().unwrap(),
+                        if let Some(target_tag_idxs) = traversal_lsp_state
+                            .tags
+                            .target_tags
+                            .tag_indices_by_id
+                            .get(link_tag.id.as_str())
+                        {
+                            for target_tag_idx in target_tag_idxs {
+                                let target_tag =
+                                    &traversal_lsp_state.tags.target_tags.tags[*target_tag_idx];
+                                log::debug!("Resolving link tag: {:?}", link_tag);
+                                log::debug!("Resolved to target tag: {:?}", target_tag);
+                                let link_tag_line_number_zero_based: u32 =
+                                    link_tag.line_number.saturating_sub(1).try_into().unwrap();
+                                let link_tag_column_start_one_based =
+                                    link_tag.range.start.saturating_add(1);
+                                let document_link = DocumentLink::new(
+                                    Range::new(
+                                        Position::new(
+                                            link_tag_line_number_zero_based,
+                                            link_tag.range.start.try_into().unwrap(),
+                                        ),
+                                        Position::new(
+                                            link_tag_line_number_zero_based,
+                                            link_tag.range.end.try_into().unwrap(),
+                                        ),
                                     ),
-                                    Position::new(
-                                        line_number,
-                                        target_tag.range.end.try_into().unwrap(),
-                                    ),
-                                ),
-                                Some(
-                                    Uri::parse(
-                                        format!(
-                                            "file://{}#L{},{}",
-                                            target_tag.file_path.to_str().unwrap(),
-                                            line_number,
-                                            target_tag.range.start
+                                    Some(
+                                        Uri::parse(
+                                            format!(
+                                                "file://{}#L{},{}",
+                                                target_tag.file_path.to_str().unwrap(),
+                                                target_tag.line_number,
+                                                link_tag_column_start_one_based
+                                            )
+                                            .as_str(),
                                         )
-                                        .as_str(),
-                                    )
-                                    .expect("Invalid URI parse"),
-                                ),
-                                None,
-                                None,
-                            );
-                            document_links.push(document_link);
+                                        .expect("Invalid URI parse"),
+                                    ),
+                                    None,
+                                    None,
+                                );
+                                document_links.push(document_link);
+                            }
                         }
                     }
                     send_ok(conn, req.id.clone(), &document_links)?

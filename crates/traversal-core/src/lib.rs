@@ -70,7 +70,7 @@ impl<'a> Sink for Aggregator<'a> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Tag {
     pub id: String,
     pub file_path: Box<Path>,

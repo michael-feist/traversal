@@ -1055,6 +1055,7 @@ dependencies = [
  "const_format",
  "grep",
  "ignore",
+ "log",
  "regex",
 ]
 

@@ -46,22 +46,25 @@ impl<'a> Sink for Aggregator<'a> {
         let line = std::str::from_utf8(bytes).unwrap_or("");
 
         if let Some(captures) = REGEX.captures(line) {
-            if let Some(group) = captures.get(RegexGroup::Target as usize) {
-                let tag_id = group.as_str().to_string();
+            let full_capture = captures.get(0).unwrap();
+
+            if let Some(target_tag_capture_group) = captures.get(RegexGroup::Target as usize) {
+                let tag_id = target_tag_capture_group.as_str().to_string();
                 self.tag_list.target_tags.push(Tag {
                     id: tag_id,
                     file_path: Box::from(self.path),
                     line_number,
-                    range: group.range(),
+                    range: full_capture.range(),
                 })
             }
-            if let Some(group) = captures.get(RegexGroup::Link as usize) {
-                let tag_id = group.as_str().to_string();
+
+            if let Some(link_tag_capture_group) = captures.get(RegexGroup::Link as usize) {
+                let tag_id = link_tag_capture_group.as_str().to_string();
                 self.tag_list.link_tags.push(Tag {
                     id: tag_id,
                     file_path: Box::from(self.path),
                     line_number,
-                    range: group.range(),
+                    range: full_capture.range(),
                 })
             }
         }

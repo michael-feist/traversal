@@ -6,18 +6,12 @@
 
 use std::{
     error::Error,
-    fmt,
     path::{Path, PathBuf},
 };
 
-use tracing::{Event, debug_span};
+use tracing::debug_span;
 
-use tracing_subscriber::{
-    EnvFilter,
-    fmt::format::{DefaultFields, Writer},
-    fmt::{FmtContext, FormatEvent},
-    registry::Registry,
-};
+use tracing_subscriber::EnvFilter;
 use traversal_core::{TagRegistry, aggregate_tags, find_tags};
 
 use lsp_types::{
@@ -39,23 +33,6 @@ use anyhow::Result;
 use lsp_server::{
     Connection, Message, Request as ServerRequest, RequestId, Response, ResponseKind,
 };
-
-struct LspPrefix<E>(E);
-
-impl<E> FormatEvent<Registry, DefaultFields> for LspPrefix<E>
-where
-    E: FormatEvent<Registry, DefaultFields>,
-{
-    fn format_event(
-        &self,
-        ctx: &FmtContext<'_, Registry, DefaultFields>,
-        mut writer: Writer<'_>,
-        event: &Event<'_>,
-    ) -> fmt::Result {
-        writer.write_str("[lsp] ")?;
-        self.0.format_event(ctx, writer, event)
-    }
-}
 
 struct TraversalLspState {
     workspace_folders: Vec<PathBuf>,
@@ -99,9 +76,6 @@ fn main() -> std::result::Result<(), Box<dyn Error + Sync + Send>> {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
-        .event_format(LspPrefix(
-            tracing_subscriber::fmt::format().with_ansi(false),
-        ))
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )

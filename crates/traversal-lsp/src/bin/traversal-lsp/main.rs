@@ -1,7 +1,6 @@
 // TODO(mfeist)
 //
 // - Make links with multiple targets work better in vscode. Defaults to first.
-// - Clean up the code. Some pretty hard to parse sections right now.
 
 use std::{
     error::Error,
@@ -33,6 +32,7 @@ use lsp_server::{
     Connection, Message, Request as ServerRequest, RequestId, Response, ResponseKind,
 };
 
+/// Persistent state of the LSP server. Used to resolve requests from the client.
 struct TraversalLspState {
     workspace_folders: Vec<PathBuf>,
     tags: TagRegistry,
@@ -66,12 +66,9 @@ fn _print_tags(tags: &TagRegistry) {
     }
 }
 
-// =====================================================================
-// main
-// =====================================================================
-
 #[allow(clippy::print_stderr)]
 fn main() -> std::result::Result<(), Box<dyn Error + Sync + Send>> {
+    // Init tracing
     tracing_subscriber::fmt()
         .with_ansi(false)
         .with_writer(std::io::stderr)
@@ -82,10 +79,8 @@ fn main() -> std::result::Result<(), Box<dyn Error + Sync + Send>> {
         .init();
     log::info!("Starting traversal-lsp");
 
-    // transport
+    // Init LSP server connection
     let (connection, io_thread) = Connection::stdio();
-
-    // advertised capabilities
     let caps = ServerCapabilities {
         text_document_sync: Some(TextDocumentSync::Kind(TextDocumentSyncKind::Full)),
         document_link_provider: Some(DocumentLinkOptions::new(
@@ -106,25 +101,11 @@ fn main() -> std::result::Result<(), Box<dyn Error + Sync + Send>> {
     let init_value = serde_json::json!({
         "capabilities": caps,
     });
-
     connection.initialize_finish(init_id, init_value)?;
-    main_loop(connection, init_params)?;
-    io_thread.join()?;
-    log::info!("Shutting down...");
-    Ok(())
-}
 
-// =====================================================================
-// event loop
-// =====================================================================
-
-fn main_loop(
-    connection: Connection,
-    params: serde_json::Value,
-) -> std::result::Result<(), Box<dyn Error + Sync + Send>> {
+    // Set up LSP server state
     let mut traversal_lsp_state = TraversalLspState::default();
-
-    let init: InitializeParams = serde_json::from_value(params)?;
+    let init: InitializeParams = serde_json::from_value(init_params)?;
 
     // Ensure client supports required LSP capabilities
     init.capabilities
@@ -135,6 +116,7 @@ fn main_loop(
         .dynamic_registration
         .expect("Client does not support dyanmic registration");
 
+    // Set up file watcher
     let options = DidChangeWatchedFilesRegistrationOptions::new(vec![FileSystemWatcher::new(
         GlobPattern::Pattern("**/*".to_string()),
         None,
@@ -154,7 +136,7 @@ fn main_loop(
         )))
         .expect("Failed to send watcher registration");
 
-    // Extract workspace folders
+    // Extract initial workspace folders from init
     if let Some(workspace_folders) = init.workspace_folders_initialize_params.workspace_folders
         && let WorkspaceFolders::WorkspaceFolderList(workspace_folders_list) = workspace_folders
     {
@@ -174,7 +156,19 @@ fn main_loop(
             aggregate_tags(find_tags(&traversal_lsp_state.workspace_folders));
     }
 
-    // Loop on incoming messages
+    // Core server loop
+    server_message_loop(&mut traversal_lsp_state, connection)?;
+    io_thread.join()?;
+
+    log::info!("Shutting down...");
+    Ok(())
+}
+
+fn server_message_loop(
+    traversal_lsp_state: &mut TraversalLspState,
+    connection: Connection,
+) -> std::result::Result<(), Box<dyn Error + Sync + Send>> {
+    // Loop on incoming messages until we receive a shutdown
     for msg in &connection.receiver {
         match msg {
             Message::Request(req) => {
@@ -182,13 +176,13 @@ fn main_loop(
                     break;
                 }
                 log::debug!("Received request '{}'", req.method);
-                if let Err(err) = handle_request(&connection, &req, &traversal_lsp_state) {
+                if let Err(err) = handle_request(&connection, &req, traversal_lsp_state) {
                     log::error!("Request {} failed: {err}", req.method);
                 }
             }
             Message::Notification(note) => {
                 log::debug!("Received notification '{}'", note.method);
-                if let Err(err) = handle_notification(&note, &mut traversal_lsp_state) {
+                if let Err(err) = handle_notification(&note, traversal_lsp_state) {
                     log::error!("Notification {} failed: {err}", note.method);
                 }
             }
@@ -198,9 +192,9 @@ fn main_loop(
     Ok(())
 }
 
-// =====================================================================
-// notifications
-// =====================================================================
+// =====================
+// Notifications
+// =====================
 
 fn handle_notification(
     note: &lsp_server::Notification,
@@ -209,26 +203,10 @@ fn handle_notification(
     let method: LspNotificationMethod<'_> = note.method.as_str().into();
     match method {
         DidChangeWorkspaceFoldersNotification::METHOD => {
-            let p: DidChangeWorkspaceFoldersParams = serde_json::from_value(note.params.clone())?;
-            for added in &p.event.added {
-                log::info!("Added workspace folder '{}': {}", added.name, added.uri);
-            }
-            for removed in &p.event.removed {
-                log::info!(
-                    "Removed workspace folder '{}': {}",
-                    removed.name,
-                    removed.uri
-                );
-            }
+            handle_did_change_workspace_folders_notification(note)?
         }
         DidChangeWatchedFilesNotification::METHOD => {
-            let _p: DidChangeWatchedFilesParams = serde_json::from_value(note.params.clone())?;
-            log::info!("Received DidChangeWatchedFiles");
-            {
-                let _tracing_span = debug_span!("find_tags").entered();
-                traversal_lsp_state.tags =
-                    aggregate_tags(find_tags(&traversal_lsp_state.workspace_folders));
-            }
+            handle_did_change_watched_files_notification(note, traversal_lsp_state)?
         }
         _ => {
             log::debug!("Received unhandled notification type '{}'", method);
@@ -237,9 +215,38 @@ fn handle_notification(
     Ok(())
 }
 
-// =====================================================================
-// requests
-// =====================================================================
+fn handle_did_change_workspace_folders_notification(note: &lsp_server::Notification) -> Result<()> {
+    let params: DidChangeWorkspaceFoldersParams = serde_json::from_value(note.params.clone())?;
+    for added in &params.event.added {
+        log::info!("Added workspace folder '{}': {}", added.name, added.uri);
+    }
+    for removed in &params.event.removed {
+        log::info!(
+            "Removed workspace folder '{}': {}",
+            removed.name,
+            removed.uri
+        );
+    }
+    Ok(())
+}
+
+fn handle_did_change_watched_files_notification(
+    note: &lsp_server::Notification,
+    traversal_lsp_state: &mut TraversalLspState,
+) -> Result<()> {
+    let _p: DidChangeWatchedFilesParams = serde_json::from_value(note.params.clone())?;
+    log::info!("Received DidChangeWatchedFiles");
+    {
+        let _tracing_span = debug_span!("find_tags").entered();
+        traversal_lsp_state.tags =
+            aggregate_tags(find_tags(&traversal_lsp_state.workspace_folders));
+    }
+    Ok(())
+}
+
+// ==============
+// Requests
+// ==============
 
 fn handle_request(
     conn: &Connection,
@@ -249,86 +256,8 @@ fn handle_request(
     let parsed: LspRequestMethod<'_> = req.method.as_str().into();
     match parsed {
         DocumentLinkRequest::METHOD => {
-            let document_link_req: DocumentLinkParams = serde_json::from_value(req.params.clone())?;
-            assert_eq!(document_link_req.text_document.uri.scheme(), "file");
-            let document_path = Path::new(document_link_req.text_document.uri.path());
-            let link_tags_opt = traversal_lsp_state
-                .tags
-                .link_tags
-                .tag_indices_by_file
-                .get(document_path);
-            match link_tags_opt {
-                // TODO(mfeist): Actually convert link_tags to valid DocumentLinks
-                Some(link_tag_idxs) => {
-                    let mut document_links = Vec::<DocumentLink>::new();
-                    for link_tag_idx in link_tag_idxs {
-                        let link_tag = &traversal_lsp_state.tags.link_tags.tags[*link_tag_idx];
-                        if let Some(target_tag_idxs) = traversal_lsp_state
-                            .tags
-                            .target_tags
-                            .tag_indices_by_id
-                            .get(link_tag.id.as_str())
-                        {
-                            for target_tag_idx in target_tag_idxs {
-                                let target_tag =
-                                    &traversal_lsp_state.tags.target_tags.tags[*target_tag_idx];
-                                log::debug!("Resolving link tag: {:?}", link_tag);
-                                log::debug!("Resolved to target tag: {:?}", target_tag);
-                                let link_tag_line_number_zero_based: u32 =
-                                    link_tag.line_number.saturating_sub(1).try_into().unwrap();
-                                let link_tag_column_start_one_based =
-                                    link_tag.range.start.saturating_add(1);
-                                let document_link = DocumentLink::new(
-                                    Range::new(
-                                        Position::new(
-                                            link_tag_line_number_zero_based,
-                                            link_tag.range.start.try_into().unwrap(),
-                                        ),
-                                        Position::new(
-                                            link_tag_line_number_zero_based,
-                                            link_tag.range.end.try_into().unwrap(),
-                                        ),
-                                    ),
-                                    Some(
-                                        Uri::parse(
-                                            format!(
-                                                "file://{}#L{},{}",
-                                                target_tag.file_path.to_str().unwrap(),
-                                                target_tag.line_number,
-                                                link_tag_column_start_one_based
-                                            )
-                                            .as_str(),
-                                        )
-                                        .expect("Invalid URI parse"),
-                                    ),
-                                    None,
-                                    None,
-                                );
-                                document_links.push(document_link);
-                            }
-                        }
-                    }
-                    send_ok(conn, req.id.clone(), &document_links)?
-                }
-                None => send_ok(conn, req.id.clone(), &Vec::<DocumentLink>::new())?,
-            }
+            handle_document_link_request(conn, req, traversal_lsp_state)?
         }
-        // CompletionRequest::METHOD => {
-        //     let item = CompletionItem {
-        //         label: "HelloFromLSP".into(),
-        //         kind: Some(CompletionItemKind::Function),
-        //         detail: Some("dummy completion".into()),
-        //         ..Default::default()
-        //     };
-        //     let items = vec![item];
-        //     let completion_list = CompletionResponse::CompletionList(lsp_types::CompletionList {
-        //         is_incomplete: false,
-        //         item_defaults: None,
-        //         apply_kind: None,
-        //         items,
-        //     });
-        //     send_ok(conn, req.id.clone(), &completion_list)?;
-        // }
         _ => send_err(
             conn,
             req.id.clone(),
@@ -339,8 +268,102 @@ fn handle_request(
     Ok(())
 }
 
+fn handle_document_link_request(
+    conn: &Connection,
+    req: &ServerRequest,
+    traversal_lsp_state: &TraversalLspState,
+) -> Result<()> {
+    let document_link_req: DocumentLinkParams = serde_json::from_value(req.params.clone())?;
+
+    // We only accept files (for now at least)
+    assert_eq!(document_link_req.text_document.uri.scheme(), "file");
+    let document_path = Path::new(document_link_req.text_document.uri.path());
+
+    let link_tags_in_file_opt = traversal_lsp_state
+        .tags
+        .link_tags
+        .tag_indices_by_file
+        .get(document_path);
+
+    /// - Creates an empty document link list.
+    /// - Loops over all of the link_tags and finds every matching target_tag.
+    /// - Loops over all of the matching target tags.
+    /// - Create a DocumentLink based on the link_tag and matching target_tag.
+    /// - Pushes the newly created DocumentLink onto the list.
+    fn create_document_links_list(
+        traversal_lsp_state: &TraversalLspState,
+        link_tag_idxs: &Vec<usize>,
+    ) -> Vec<DocumentLink> {
+        // Create an empty document list
+        let mut document_links = Vec::<DocumentLink>::new();
+
+        // Loop over all the link tags
+        for link_tag_idx in link_tag_idxs {
+            let link_tag = &traversal_lsp_state.tags.link_tags.tags[*link_tag_idx];
+            if let Some(target_tag_idxs) = traversal_lsp_state
+                .tags
+                .target_tags
+                .tag_indices_by_id
+                .get(link_tag.id.as_str())
+            {
+                // Loop over all of the matching target tags
+                for target_tag_idx in target_tag_idxs {
+                    let target_tag = &traversal_lsp_state.tags.target_tags.tags[*target_tag_idx];
+                    log::debug!("Resolving link tag: {:?}", link_tag);
+                    log::debug!("Resolved to target tag: {:?}", target_tag);
+
+                    // Create a DocumentLink based on the link_tag and matching target_tag
+                    let link_tag_line_number_zero_based: u32 =
+                        link_tag.line_number.saturating_sub(1).try_into().unwrap();
+                    let link_tag_column_start_one_based = link_tag.range.start.saturating_add(1);
+                    let document_link = DocumentLink::new(
+                        Range::new(
+                            Position::new(
+                                link_tag_line_number_zero_based,
+                                link_tag.range.start.try_into().unwrap(),
+                            ),
+                            Position::new(
+                                link_tag_line_number_zero_based,
+                                link_tag.range.end.try_into().unwrap(),
+                            ),
+                        ),
+                        Some(
+                            Uri::parse(
+                                format!(
+                                    "file://{}#L{},{}",
+                                    target_tag.file_path.to_str().unwrap(),
+                                    target_tag.line_number,
+                                    link_tag_column_start_one_based
+                                )
+                                .as_str(),
+                            )
+                            .expect("Invalid URI parse"),
+                        ),
+                        None,
+                        None,
+                    );
+
+                    // Push the new DocumentLink onto the list
+                    document_links.push(document_link);
+                }
+            }
+        }
+
+        return document_links;
+    }
+
+    match link_tags_in_file_opt {
+        Some(link_tag_idxs) => {
+            let document_links = create_document_links_list(traversal_lsp_state, link_tag_idxs);
+            send_ok(conn, req.id.clone(), &document_links)?
+        }
+        None => send_ok(conn, req.id.clone(), &Vec::<DocumentLink>::new())?,
+    }
+    Ok(())
+}
+
 // =====================================================================
-// helpers
+// Helpers
 // =====================================================================
 
 fn send_ok<T: serde::Serialize>(conn: &Connection, id: RequestId, result: &T) -> Result<()> {

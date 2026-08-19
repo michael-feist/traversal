@@ -1,6 +1,6 @@
 {
-	"name": "traversal-lsp",
-	"description": "Official VSCode extension for the traversal language server",
+	"name": "Traversal",
+	"description": "Official VSCode extension for the Traversal language server",
 	"author": "Michael Feist",
 	"publisher": "michael-feist",
 	"license": "MIT",

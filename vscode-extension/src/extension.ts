@@ -35,7 +35,7 @@ export function activate(context: ExtensionContext) {
 			// Notify the server about file changes to '.clientrc files contained in the workspace
 			fileEvents: workspace.createFileSystemWatcher('**/.clientrc')
 		},
-		outputChannel: window.createOutputChannel("traversal-lsp"),
+		outputChannel: window.createOutputChannel("traversal-lsp", { log: true }),
 	};
 
 	// Create the language client and start the client.

@@ -38,3 +38,6 @@ test_workspace_large
 # Node
 node_modules
 out
+
+# VSCode packages
+*.vsix

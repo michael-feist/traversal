@@ -2,8 +2,13 @@
 	"name": "traversal-lsp-vscode-extension-client",
 	"description": "Official VSCode extension for the traversal language server",
 	"author": "Michael Feist",
+	"publisher": "michael-feist",
 	"license": "MIT",
 	"version": "0.0.1",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/michael-feist/traversal.git"
+	},
 	"engines": {
 		"vscode": "^1.100.0"
 	},

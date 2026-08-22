@@ -315,7 +315,8 @@ fn handle_document_link_request(
                     // Create a DocumentLink based on the link_tag and matching target_tag
                     let link_tag_line_number_zero_based: u32 =
                         link_tag.line_number.saturating_sub(1).try_into().unwrap();
-                    let link_tag_column_start_one_based = link_tag.range.start.saturating_add(1);
+                    let target_tag_column_start_one_based =
+                        target_tag.range.start.saturating_add(1);
                     let document_link = DocumentLink::new(
                         Range::new(
                             Position::new(
@@ -333,7 +334,7 @@ fn handle_document_link_request(
                                     "file://{}#L{},{}",
                                     target_tag.file_path.to_str().unwrap(),
                                     target_tag.line_number,
-                                    link_tag_column_start_one_based
+                                    target_tag_column_start_one_based
                                 )
                                 .as_str(),
                             )

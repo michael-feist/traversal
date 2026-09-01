@@ -3,13 +3,15 @@
  * Licensed under the MIT License. See License.txt in the project root for license information.
  * ------------------------------------------------------------------------------------------ */
 
-import { workspace, ExtensionContext, window, ExtensionMode } from 'vscode';
+import { workspace, ExtensionContext, ExtensionMode } from 'vscode';
 
 import {
 	LanguageClient,
 	LanguageClientOptions,
 	ServerOptions,
 } from 'vscode-languageclient/node';
+
+import { ForwardingOutputChannel } from './forwardingOutputChannel';
 
 let client: LanguageClient;
 
@@ -35,7 +37,7 @@ export function activate(context: ExtensionContext) {
 			// Notify the server about file changes to '.clientrc files contained in the workspace
 			fileEvents: workspace.createFileSystemWatcher('**/.clientrc')
 		},
-		outputChannel: window.createOutputChannel("traversal-lsp", { log: true }),
+		outputChannel: new ForwardingOutputChannel("traversal-lsp"),
 	};
 
 	// Create the language client and start the client.

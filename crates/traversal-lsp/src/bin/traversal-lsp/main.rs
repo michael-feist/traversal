@@ -4,6 +4,7 @@
 
 use std::{
     error::Error,
+    io::IsTerminal,
     path::{Path, PathBuf},
 };
 
@@ -70,7 +71,7 @@ fn _print_tags(tags: &TagRegistry) {
 fn main() -> std::result::Result<(), Box<dyn Error + Sync + Send>> {
     // Init tracing
     tracing_subscriber::fmt()
-        .with_ansi(false)
+        .with_ansi(std::io::stderr().is_terminal())
         .with_writer(std::io::stderr)
         .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
         .with_env_filter(
